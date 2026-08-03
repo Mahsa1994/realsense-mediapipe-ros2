@@ -57,8 +57,9 @@ class HolisticPublisher(Node):
                 success, image = cap.read()
                 if not success:
                     print("Sem camera.")
-                            
-                image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)                
+                    continue
+
+                image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
                 image.flags.writeable = False
                 results_face_mesh = face_mesh.process(image)
                 results_pose = pose.process(image)
@@ -84,7 +85,7 @@ class HolisticPublisher(Node):
                     mp_drawing.draw_landmarks(
                             image=image,
                             landmark_list=landmark_subset,
-                            connections=mp_face_mesh.FACE_CONNECTIONS,
+                            connections=mp_face_mesh.FACEMESH_TESSELATION,
                             landmark_drawing_spec=drawing_spec,
                             connection_drawing_spec=drawing_spec)
                 else: # responsavel por mandar 0 nos topicos quando corpo nao esta na tela
@@ -101,8 +102,6 @@ class HolisticPublisher(Node):
 
                 #processo pose
                 # Draw the pose annotation on the image.
-                image.flags.writeable = True
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 mp_drawing.draw_landmarks(
                     image, results_pose.pose_landmarks, mp_pose.POSE_CONNECTIONS)
                 if results_pose.pose_landmarks != None:
