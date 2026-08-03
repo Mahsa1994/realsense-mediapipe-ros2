@@ -7,6 +7,14 @@
   <maintainer email="dmartinelli1997@gmail.com">Dieisson Martinelli</maintainer>
   <license>TODO: License declaration</license>
 
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>media_pipe_ros2_msg</depend>
+  <exec_depend>realsense2_camera</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
