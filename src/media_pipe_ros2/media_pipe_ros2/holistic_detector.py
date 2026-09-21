@@ -12,6 +12,25 @@ mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
 cap = cv2.VideoCapture(0)
+# No resolution was ever requested here, so the driver picked its own
+# default (typically 640x480 on V4L2) - visibly low quality regardless of
+# JPEG settings downstream. 1280x720 @ 30fps chosen over the webcam's
+# max of 1920x1080 (confirmed via `v4l2-ctl --list-formats-ext`) as a
+# balance: a real quality jump without pushing MediaPipe Holistic's
+# per-frame CPU cost far enough to risk the actual achieved framerate
+# dropping below what's requested. Must set FOURCC to MJPG first - the
+# camera only offers 30fps at this resolution in MJPG (compressed at the
+# USB layer, decoded back to normal frames by OpenCV); the alternative
+# uncompressed YUYV format caps out well below 30fps at 1280x720.
+cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv2.CAP_PROP_FPS, 30)
+print(f"Camera opened at {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+      f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
+      f"{cap.get(cv2.CAP_PROP_FPS)}fps (requested 1280x720@30 - "
+      f"`.set()` calls can be silently ignored by some drivers, this "
+      f"confirms what was actually negotiated)")
 
 NAME_POSE = [
     (PoseLandmark.NOSE), (PoseLandmark.LEFT_EYE_INNER),
