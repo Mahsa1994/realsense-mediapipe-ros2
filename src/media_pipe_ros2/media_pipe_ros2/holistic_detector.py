@@ -2,9 +2,10 @@ import rclpy
 import cv2
 import mediapipe as mp
 from rclpy.node import Node
-from media_pipe_ros2_msg.msg import HandPoint,HandPoint,MediaPipeHumanHand,MediaPipeHumanHolisticList                            
+from media_pipe_ros2_msg.msg import HandPoint,HandPoint,MediaPipeHumanHand,MediaPipeHumanHolisticList
 from mediapipe.python.solutions.pose import PoseLandmark
 from mediapipe.framework.formats import landmark_pb2
+from sensor_msgs.msg import CompressedImage
 mp_drawing = mp.solutions.drawing_utils
 mp_holistic = mp.solutions.holistic
 mp_hands = mp.solutions.hands
@@ -36,7 +37,17 @@ class HolisticPublisher(Node):
     def __init__(self):
         super().__init__('mediapipe_publisher_holistic')
         self.publisher_ = self.create_publisher(MediaPipeHumanHolisticList, '/mediapipe/human_holistic_list', 10)
-        
+        # Compressed video, on the standard image_transport "<base_topic>/compressed"
+        # naming convention (so image_transport tooling resolves it by convention)
+        # even though this publishes CompressedImage directly rather than going
+        # through the image_transport plugin machinery. JPEG quality 90 - high
+        # enough to not wash out subtle skin-color detail (relevant for e.g. rPPG
+        # reprocessing later), well short of raw. Path B (this node) has no other
+        # way to get raw video into a bag; Path A (RealSense) already gets this for
+        # free via realsense2_camera's own image_transport-based publishing, once
+        # ros-jazzy-compressed-image-transport is installed - no code needed there.
+        self.image_pub_ = self.create_publisher(CompressedImage, '/mediapipe/image_raw/compressed', 10)
+
 
     def getimage_callback(self):
         mediapipehumanholisticlist = MediaPipeHumanHolisticList() 
@@ -67,6 +78,21 @@ class HolisticPublisher(Node):
                 image.flags.writeable = True
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 imageHeight, imageWidth, _ = image.shape
+
+                # Publish the CLEAN frame (before any landmark overlays get drawn
+                # onto `image` below) as compressed JPEG - publishing after the
+                # draw_landmarks() calls further down would bake the skeleton/mesh
+                # graphics into the recorded pixels, corrupting it for offline
+                # reprocessing.
+                encode_ok, encoded_image = cv2.imencode(
+                    '.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                if encode_ok:
+                    compressed_msg = CompressedImage()
+                    compressed_msg.header.stamp = self.get_clock().now().to_msg()
+                    compressed_msg.format = "jpeg"
+                    compressed_msg.data = encoded_image.tobytes()
+                    self.image_pub_.publish(compressed_msg)
+
                 landmark_temp = []
                 #face process
                 if results_face_mesh.multi_face_landmarks:
