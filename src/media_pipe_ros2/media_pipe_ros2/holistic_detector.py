@@ -6,31 +6,12 @@ from media_pipe_ros2_msg.msg import HandPoint,HandPoint,MediaPipeHumanHand,Media
 from mediapipe.python.solutions.pose import PoseLandmark
 from mediapipe.framework.formats import landmark_pb2
 from sensor_msgs.msg import CompressedImage
+from rcl_interfaces.msg import ParameterDescriptor
 mp_drawing = mp.solutions.drawing_utils
 mp_holistic = mp.solutions.holistic
 mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
-cap = cv2.VideoCapture(0)
-# No resolution was ever requested here, so the driver picked its own
-# default (typically 640x480 on V4L2) - visibly low quality regardless of
-# JPEG settings downstream. 1280x720 @ 30fps chosen over the webcam's
-# max of 1920x1080 (confirmed via `v4l2-ctl --list-formats-ext`) as a
-# balance: a real quality jump without pushing MediaPipe Holistic's
-# per-frame CPU cost far enough to risk the actual achieved framerate
-# dropping below what's requested. Must set FOURCC to MJPG first - the
-# camera only offers 30fps at this resolution in MJPG (compressed at the
-# USB layer, decoded back to normal frames by OpenCV); the alternative
-# uncompressed YUYV format caps out well below 30fps at 1280x720.
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-cap.set(cv2.CAP_PROP_FPS, 30)
-print(f"Camera opened at {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
-      f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
-      f"{cap.get(cv2.CAP_PROP_FPS)}fps (requested 1280x720@30 - "
-      f"`.set()` calls can be silently ignored by some drivers, this "
-      f"confirms what was actually negotiated)")
 
 NAME_POSE = [
     (PoseLandmark.NOSE), (PoseLandmark.LEFT_EYE_INNER),
@@ -67,6 +48,45 @@ class HolisticPublisher(Node):
         # ros-jazzy-compressed-image-transport is installed - no code needed there.
         self.image_pub_ = self.create_publisher(CompressedImage, '/mediapipe/image_raw/compressed', 10)
 
+        # Which camera to open: an index ("0", "1", ...) or a device path
+        # ("/dev/video1"). Index 0 is not always the external webcam - check
+        # with `v4l2-ctl --list-devices`.
+        # dynamic_typing: `camera:=1` arrives as an int, `camera:=/dev/video1` as a string
+        camera = str(self.declare_parameter(
+            'camera', '0', ParameterDescriptor(dynamic_typing=True)).value)
+        self.cap = cv2.VideoCapture(int(camera) if camera.isdigit() else camera)
+        if not self.cap.isOpened():
+            self.get_logger().error(f'Could not open camera {camera!r} - check '
+                                    f'`v4l2-ctl --list-devices` and pass -p camera:=...')
+            return
+        # No resolution was ever requested here, so the driver picked its own
+        # default (typically 640x480 on V4L2) - visibly low quality regardless of
+        # JPEG settings downstream. 1280x720 @ 30fps chosen over the webcam's
+        # max of 1920x1080 (confirmed via `v4l2-ctl --list-formats-ext`) as a
+        # balance: a real quality jump without pushing MediaPipe Holistic's
+        # per-frame CPU cost far enough to risk the actual achieved framerate
+        # dropping below what's requested. Must set FOURCC to MJPG first - the
+        # camera only offers 30fps at this resolution in MJPG (compressed at the
+        # USB layer, decoded back to normal frames by OpenCV); the alternative
+        # uncompressed YUYV format caps out well below 30fps at 1280x720.
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        # Processing (~18.6 Hz) is slower than the camera (30 Hz), so with the
+        # driver's default multi-frame queue read() returns frames that are
+        # already several frames old, adding a variable lag to every timestamp.
+        # A 1-frame buffer makes read() return the newest frame; the frames it
+        # discards were going to be skipped anyway.
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.get_logger().info(
+            f"Camera {camera!r} opened at {int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+            f"{int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
+            f"{self.cap.get(cv2.CAP_PROP_FPS)}fps, buffer "
+            f"{int(self.cap.get(cv2.CAP_PROP_BUFFERSIZE))} (requested 1280x720@30, "
+            f"buffer 1 - drivers can silently ignore .set(), this is what was "
+            f"actually negotiated)")
+
 
     def getimage_callback(self):
         mediapipehumanholisticlist = MediaPipeHumanHolisticList() 
@@ -82,9 +102,12 @@ class HolisticPublisher(Node):
                 max_num_hands=2) as hands, mp_pose.Pose(
                min_detection_confidence=0.5,
                min_tracking_confidence=0.5) as pose:
-            while cap.isOpened():
+            while self.cap.isOpened():
 
-                success, image = cap.read()
+                success, image = self.cap.read()
+                # Stamp at capture, not after the ~50 ms of MediaPipe
+                # processing below, so the frame lines up with other streams.
+                capture_stamp = self.get_clock().now().to_msg()
                 if not success:
                     print("Sem camera.")
                     continue
@@ -107,7 +130,7 @@ class HolisticPublisher(Node):
                     '.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
                 if encode_ok:
                     compressed_msg = CompressedImage()
-                    compressed_msg.header.stamp = self.get_clock().now().to_msg()
+                    compressed_msg.header.stamp = capture_stamp
                     compressed_msg.format = "jpeg"
                     compressed_msg.data = encoded_image.tobytes()
                     self.image_pub_.publish(compressed_msg)
@@ -251,8 +274,8 @@ def main(args=None):
 
     holistic_publisher = HolisticPublisher()
     holistic_publisher.getimage_callback()
-    
-    cap.release()
+
+    holistic_publisher.cap.release()
     
     rclpy.spin(holistic_publisher)
 
