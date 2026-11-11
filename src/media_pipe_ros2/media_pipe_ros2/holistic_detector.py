@@ -1,4 +1,5 @@
 import rclpy
+from media_pipe_ros2.audio_capture import start_audio
 import cv2
 import mediapipe as mp
 from rclpy.node import Node
@@ -271,6 +272,7 @@ class HolisticPublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    start_audio()  # audio replaces the separate audio_recorder node
 
     holistic_publisher = HolisticPublisher()
     holistic_publisher.getimage_callback()
